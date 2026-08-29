@@ -18,6 +18,7 @@ import { INK, ORANGE, MONO } from "../theme.js";
 import { ComicButton, ComicTitle, HalftoneRamp, ANTON, CREAM } from "./comic.jsx";
 import MenuDuck, { preloadMenuDuck, isMenuDuckReady } from "./MenuDuck.jsx";
 import { PreorderButton } from "./Hud.jsx";
+import { readLayoutMap, resolveKeycaps } from "./keyboard-layout.js";
 
 const rowIn = keyframes`
   from { transform: translateY(12px); opacity: 0; }
@@ -63,13 +64,16 @@ const Kbd = styled("kbd")(({ round }) => ({
 // Arcade-style cheat strip pinned at the bottom of the title screen: one
 // keycap group + label per move, scannable in a second. The CTA is the
 // screen's centre of gravity - players enter first and learn in game.
+// Controls bind physical KeyboardEvent.code positions, so letter keycaps
+// carry `codes` and get their printed label resolved for the active layout
+// (QWERTY fallback where the Keyboard Map API is unavailable).
 const SHORTCUTS = {
   kb: [
     { caps: ["\u2191\u2190\u2193\u2192"], name: "Move" },
-    { caps: ["A", "E"], name: "Kick" },
-    { caps: ["R"], name: "Sit" },
-    { caps: ["G"], name: "Pick up" },
-    { caps: ["C"], name: "Camera" },
+    { codes: ["KeyQ", "KeyE"], name: "Kick" },
+    { codes: ["KeyR"], name: "Sit" },
+    { codes: ["KeyG"], name: "Pick up" },
+    { codes: ["KeyC"], name: "Camera" },
     { caps: ["Space"], name: "Reset" },
   ],
   pad: [
@@ -85,8 +89,8 @@ const SHORTCUTS = {
     { caps: ["B"], round: true, name: "Quack" },
   ],
 };
+// kb's hint is built at render time from the resolved layout (see kbHint).
 const HINTS = {
-  kb: "ZQSD works too \u00b7 drag to orbit \u00b7 scroll to zoom",
   pad: "A ground pick \u00b7 RT quack \u00b7 hold LT wheee \u00b7 R3 chase",
   touch: "drag to orbit \u00b7 pinch to zoom",
 };
@@ -107,6 +111,33 @@ const VARIANT_ACCENTS = {
 const tint = (hex, a) =>
   `rgba(${parseInt(hex.slice(1, 3), 16)}, ${parseInt(hex.slice(3, 5), 16)}, ${parseInt(hex.slice(5, 7), 16)}, ${a})`;
 
+const KB_CODES = SHORTCUTS.kb.flatMap((t) => t.codes ?? []);
+
+function useKeycaps(enabled) {
+  const [keycaps, setKeycaps] = useState(() => resolveKeycaps(KB_CODES, null));
+
+  useEffect(() => {
+    if (!enabled) return;
+    let cancelled = false;
+    let latest = 0;
+    const read = async () => {
+      const ticket = ++latest;
+      const map = await readLayoutMap();
+      // Overlapping reads can settle out of order; only the newest paints.
+      if (!cancelled && ticket === latest) setKeycaps(resolveKeycaps(KB_CODES, map));
+    };
+    read();
+    const keyboard = navigator.keyboard;
+    keyboard?.addEventListener?.("layoutchange", read);
+    return () => {
+      cancelled = true;
+      keyboard?.removeEventListener?.("layoutchange", read);
+    };
+  }, [enabled]);
+
+  return keycaps;
+}
+
 function closeMenu() {
   useGame.setState({ menuOpen: false });
   if (!useGame.getState().entered) useGame.setState({ entered: true });
@@ -126,6 +157,9 @@ export default function TitleMenu() {
   const bootFailed = useGame((s) => s.bootFailed);
   const [closing, setClosing] = useState(false);
   const prevOpen = useRef(menuOpen);
+  // A plugged-in gamepad wins over the touch tutorial.
+  const tutorialVariant = padConnected ? "pad" : touchMode ? "touch" : "kb";
+  const { labels, moveHint } = useKeycaps(tutorialVariant === "kb");
 
   // Touch devices and narrow (mobile-sized) screens skip the 3D stage
   // entirely: no duck column, and the GLB is never even downloaded. The
@@ -302,9 +336,16 @@ export default function TitleMenu() {
 
   if (!menuOpen && !closing) return null;
 
-  // A plugged-in gamepad wins over the touch tutorial.
-  const tutorialVariant = padConnected ? "pad" : touchMode ? "touch" : "kb";
-  const shortcuts = SHORTCUTS[tutorialVariant];
+  // Letter keycaps resolved for the active layout (QWERTY fallback).
+  const shortcuts =
+    tutorialVariant === "kb"
+      ? SHORTCUTS.kb.map((t) =>
+          t.codes ? { ...t, caps: t.codes.map((code) => labels[code]) } : t,
+        )
+      : SHORTCUTS[tutorialVariant];
+  // The strip's footnote names the letter movement cluster for the active
+  // layout too ("ZQSD works too" reads wrong on QWERTY and Dvorak).
+  const kbHint = `${moveHint.replace(/^arrows or /, "")} works too \u00b7 drag to orbit \u00b7 scroll to zoom`;
   const ctaLabel = entered ? "Resume" : "Waddle in";
   // Blinking key prompt under the CTA; touch has no key to press.
   const enterHint = padConnected ? "press A" : touchMode ? null : "press Enter";
@@ -668,8 +709,9 @@ export default function TitleMenu() {
               }}
             >
               <Box sx={{ display: "inline-flex", gap: "0.22rem" }}>
-                {s.caps.map((c) => (
-                  <Kbd key={c} round={s.round ? 1 : 0}>{c}</Kbd>
+                {/* Index keys: exotic layouts can print the same glyph twice. */}
+                {s.caps.map((c, i) => (
+                  <Kbd key={i} round={s.round ? 1 : 0}>{c}</Kbd>
                 ))}
               </Box>
               <Box
@@ -699,7 +741,7 @@ export default function TitleMenu() {
             color: "rgba(255, 255, 255, 0.34)",
           }}
         >
-          {HINTS[tutorialVariant]}
+          {tutorialVariant === "kb" ? kbHint : HINTS[tutorialVariant]}
         </Typography>
       </Box>
       </>
