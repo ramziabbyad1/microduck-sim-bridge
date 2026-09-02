@@ -64,9 +64,12 @@ const Kbd = styled("kbd")(({ round }) => ({
 // keycap group + label per move, scannable in a second. The CTA is the
 // screen's centre of gravity - players enter first and learn in game.
 const SHORTCUTS = {
+  // Keyboard controls use KeyboardEvent.code, so the physical positions
+  // stay fixed across layouts. Show QWERTY caps and name the AZERTY labels
+  // explicitly instead of presenting one layout as universal.
   kb: [
     { caps: ["\u2191\u2190\u2193\u2192"], name: "Move" },
-    { caps: ["A", "E"], name: "Kick" },
+    { caps: ["Q", "E"], name: "Kick" },
     { caps: ["R"], name: "Sit" },
     { caps: ["G"], name: "Pick up" },
     { caps: ["C"], name: "Camera" },
@@ -86,7 +89,7 @@ const SHORTCUTS = {
   ],
 };
 const HINTS = {
-  kb: "ZQSD works too \u00b7 drag to orbit \u00b7 scroll to zoom",
+  kb: "WASD / ZQSD \u00b7 A / E kicks on AZERTY \u00b7 drag to orbit \u00b7 scroll to zoom",
   pad: "A ground pick \u00b7 RT quack \u00b7 hold LT wheee \u00b7 R3 chase",
   touch: "drag to orbit \u00b7 pinch to zoom",
 };
