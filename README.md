@@ -142,6 +142,63 @@ npm run dev     # dev server on http://localhost:5173
 npm run build   # production bundle in app/dist/
 ```
 
+## Experimental JSON-RPC adapter
+
+This fork is adding an API-compatible simulator boundary so the same client
+can eventually target either `robotd` or MuJoCo. The current vertical slice
+supports the physical robot's `robot.move`, `robot.stop`, and `robot.do` calls
+in the browser. It intentionally uses the robot's 500 ms movement dead-man. See
+[`docs/adapter-architecture.md`](docs/adapter-architecture.md) for the design
+and extension points.
+
+After entering the simulator, this browser-console example drives forward at
+20 Hz, as a real continuous-intent client would:
+
+```js
+window.demoDrive = setInterval(() => window.microduckRpc.receive({
+  jsonrpc: "2.0",
+  method: "robot.move",
+  params: { vx: 0.2, vy: 0, vyaw: 0 },
+}), 50);
+```
+
+Stop it with an answered JSON-RPC request:
+
+```js
+clearInterval(window.demoDrive);
+window.microduckRpc.receive({
+  jsonrpc: "2.0",
+  id: 1,
+  method: "robot.stop",
+});
+```
+
+The adapter core is transport-independent; no networking code belongs in the
+physics or policy loop. To run the local gateway:
+
+```bash
+cd app
+npm run build
+npm run bridge
+```
+
+Then open `http://127.0.0.1:8787/`. The gateway redirects the simulator to its
+same-origin WebSocket automatically and exposes two client endpoints:
+
+- WebSocket JSON-RPC: `ws://127.0.0.1:8787/rpc`
+- robotd-compatible NDJSON socket: `/tmp/microduck-sim/robotd.sock`
+
+The gateway binds HTTP to localhost by default. Keep it local while the
+adapter has no authentication.
+
+With that browser tab open, demonstrate an API-only kick through the Unix
+socket (not a keyboard event):
+
+```bash
+cd app
+npm run robot:do -- kick_left
+```
+
 The Space builds with the included `Dockerfile` (Vite build, served by
 nginx-unprivileged on port 8080). Static assets (meshes, policies, audio,
 images) live in `app/public/` and keep their historical URLs.
