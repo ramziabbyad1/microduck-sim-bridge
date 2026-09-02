@@ -189,6 +189,13 @@ export class Controller {
   #dispatch(action, meta) {
     const set = this.#listeners.get(action);
     if (!set) return;
-    for (const cb of set) cb(meta);
+    // Most inputs ignore return values. Answered API intents use the first
+    // listener result so the game can report whether it actually launched.
+    let result;
+    for (const cb of set) {
+      const next = cb(meta);
+      if (result === undefined && next !== undefined) result = next;
+    }
+    return result;
   }
 }

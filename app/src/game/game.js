@@ -43,9 +43,11 @@ import {
   VARIANTS, materialHookFor, DEFAULT_VARIANT, applyVariant,
 } from "./variants.js";
 import { Controller } from "./controls/controller.js";
+import { ApiSource, MicroduckRpc } from "./controls/api.js";
 import { KeyboardSource } from "./controls/keyboard.js";
 import { GamepadSource } from "./controls/gamepad.js";
 import { TouchSource } from "./controls/touch.js";
+import { GatewayTransport, gatewayUrlFromLocation } from "./rpc/gateway-transport.js";
 import * as fx from "./fx/fx-wireframe.js";
 import { createCeremony, CAM_RESET_S } from "./ceremony.js";
 import { createBallActor } from "./ball-actor.js";
@@ -370,13 +372,21 @@ async function boot({ scene, camera, renderer }) {
   const lastAction = new Float32Array(NUM_JOINTS);
   const obs = new Float32Array(OBS_SIZE);
   const cmd = new Float32Array(CMD_SIZE); // [vx, vy, wz, head(4), body(6)]
-  // Input controller: keyboard + gamepad + touch sources merged into one
+  // Input controller: API + keyboard + gamepad + touch sources merged into one
   // continuous command + discrete action surface, in priority order.
+  const apiSource = new ApiSource();
   const kbSource = new KeyboardSource({ getVelocityLimits: () => velLims() });
   const padSource = new GamepadSource({ getVelocityLimits: () => velLims() });
   const touchSource = new TouchSource({ getVelocityLimits: () => velLims() });
   // Keyboard last: it reads zero when idle, so it doubles as the fallback.
-  const controller = new Controller({ sources: [padSource, touchSource, kbSource] });
+  const controller = new Controller({ sources: [apiSource, padSource, touchSource, kbSource] });
+  const microduckRpc = new MicroduckRpc({ source: apiSource });
+  window.microduckRpc = microduckRpc;
+  const gatewayUrl = gatewayUrlFromLocation();
+  const gatewayTransport = gatewayUrl
+    ? new GatewayTransport({ rpc: microduckRpc, url: gatewayUrl })
+    : null;
+  gatewayTransport?.init();
   // Right-stick camera state, read by the telemetry before the camera-orbit
   // section below has evaluated.
   let padOrbitLive = false;
@@ -1561,17 +1571,47 @@ async function boot({ scene, camera, renderer }) {
   // Keyboard F alternates kicking feet; only advance the alternation on
   // kicks that actually launched (triggerKick reports that).
   let kbKickFoot = "left";
-  const srcTag = (source) => (source === "gamepad" ? "pad" : "kb");
+  const srcTag = (source) => source === "gamepad" ? "pad" : source === "api" ? "api" : "kb";
+
+  const activeSkill = () =>
+    mode === "groundpick" ? "ground_pick"
+    : mode === "kickL" ? "kick_left"
+    : mode === "kickR" ? "kick_right"
+    : mode === "roll" ? "roulade"
+    : mode === "sitstand" ? "sit_toggle"
+    : null;
+  const refusedSkillReason = (skill) => {
+    if (loco !== "legs") return `${skill} is unavailable in roller mode`;
+    if (inputLocked) return "simulator input is locked";
+    if (recovery) return "fall recovery is in progress";
+    if (standTimer) return "a stand transition is in progress";
+    const running = activeSkill();
+    if (running) return `${running} is already running`;
+    return `${skill} was refused by the simulator`;
+  };
+  const skillResult = (skill, accepted) => accepted
+    ? { accepted: true }
+    : { accepted: false, reason: refusedSkillReason(skill) };
 
   controller.on("reset", () => resetSim());
   controller.on("spawnBall", () => spawnBall());
   controller.on("headToggle", () => toggleHeadMode());
   controller.on("chaseToggle", () => { chaseCam = !chaseCam; });
   controller.on("locoToggle", () => toggleLoco());
-  controller.on("roll", ({ source }) => triggerRoll(srcTag(source)));
-  controller.on("groundPick", ({ source }) => triggerGroundPick(srcTag(source)));
-  controller.on("kickL", ({ source }) => triggerKick("left", srcTag(source)));
-  controller.on("kickR", ({ source }) => triggerKick("right", srcTag(source)));
+  controller.on("roll", ({ source }) => {
+    // Local roller controls intentionally turn this button into crouch-glide.
+    // robot.do(roulade) must instead preserve the physical method's meaning.
+    const accepted = source === "api" && loco !== "legs"
+      ? false
+      : triggerRoll(srcTag(source));
+    return skillResult("roulade", accepted);
+  });
+  controller.on("groundPick", ({ source }) =>
+    skillResult("ground_pick", triggerGroundPick(srcTag(source))));
+  controller.on("kickL", ({ source }) =>
+    skillResult("kick_left", triggerKick("left", srcTag(source))));
+  controller.on("kickR", ({ source }) =>
+    skillResult("kick_right", triggerKick("right", srcTag(source))));
   controller.on("alternateKick", ({ source }) => {
     if (triggerKick(kbKickFoot, srcTag(source))) {
       kbKickFoot = kbKickFoot === "left" ? "right" : "left";
@@ -1580,9 +1620,12 @@ async function boot({ scene, camera, renderer }) {
   // Sit is the legs-only skill; on rollers the same button hands over to
   // the crouch-glide, exactly as the (now unbound) roll action did.
   controller.on("sitToggle", ({ source } = {}) => {
+    if (source === "api" && loco !== "legs") {
+      return skillResult("sit_toggle", false);
+    }
     if (loco !== "legs") return triggerCrouch(srcTag(source));
     const sitting = mode === "sitstand" && sitFlag === 1;
-    setMode(sitting ? "walk" : "sit");
+    return skillResult("sit_toggle", setMode(sitting ? "walk" : "sit"));
   });
   // Pad DpadUp short press: straight back to running (ignored mid-roll /
   // mid-crouch: those hand back to walk on their own).
@@ -1616,14 +1659,14 @@ async function boot({ scene, camera, renderer }) {
   }
 
   function setMode(next, { force = false } = {}) {
-    if (!force && inputLocked) return;
+    if (!force && inputLocked) return false;
     // No policy switching mid-roll or mid-kick: both end on their own and
     // return to walk - switching now would floor the duck. Same while the
     // fall-recovery state machine owns the duck.
-    if (recovery) return;
+    if (recovery) return false;
     if ((mode === "roll" && rollRun) || (isKick() && kickRun) ||
-        (mode === "crouch" && crouchRun) || (mode === "groundpick" && pickRun)) return;
-    if (next === "sit" && loco === "rollers") return;
+        (mode === "crouch" && crouchRun) || (mode === "groundpick" && pickRun)) return false;
+    if (next === "sit" && loco === "rollers") return false;
     exitHeadMode(); // posture changes exit head mode (offsets kept)
     clearModeTimers();
     rollRun = null;
@@ -1640,7 +1683,7 @@ async function boot({ scene, camera, renderer }) {
           syncButtons();
         }, 2000);
         syncButtons();
-        return;
+        return true;
       }
       mode = next;
       lastAction.fill(0);
@@ -1657,6 +1700,7 @@ async function boot({ scene, camera, renderer }) {
       }, 800);
     }
     syncButtons();
+    return true;
   }
 
   // One roll, then straight back to running. lastAction is deliberately
@@ -1664,7 +1708,7 @@ async function boot({ scene, camera, renderer }) {
   // policy switches, and the roll initiates more reliably mid-gait.
   function triggerRoll(source = "kb") {
     if (loco === "rollers") return triggerCrouch(source);
-    if (inputLocked || mode !== "walk" || standTimer || recovery) return;
+    if (inputLocked || mode !== "walk" || standTimer || recovery) return false;
     exitHeadMode();
     clearModeTimers();
     mode = "roll";
@@ -1672,17 +1716,19 @@ async function boot({ scene, camera, renderer }) {
     rollRun = { steps: 0, tipped: false };
     syncButtons();
     stickers?.pop("roll");
+    return true;
   }
 
   // Roller-only one-shot: crouch, glide low, stand back up (phase-driven).
   function triggerCrouch(source = "kb") {
-    if (inputLocked || mode !== "walk" || locoSwitching || recovery) return;
+    if (inputLocked || mode !== "walk" || locoSwitching || recovery) return false;
     exitHeadMode();
     clearModeTimers();
     mode = "crouch";
     crouchRun = { phase: 0 };
     syncButtons();
     stickers?.pop("roll");
+    return true;
   }
 
   // One-shot ground pick (runtime A button): peck the ground and stand
@@ -1690,14 +1736,15 @@ async function boot({ scene, camera, renderer }) {
   // the command vel slots). Legs-only, from walk, and never during another
   // one-shot / a stand-up hand-back / the entrance lock.
   function triggerGroundPick(source = "kb") {
-    if (loco !== "legs") return;
-    if (inputLocked || mode !== "walk" || standTimer || recovery) return;
+    if (loco !== "legs") return false;
+    if (inputLocked || mode !== "walk" || standTimer || recovery) return false;
     exitHeadMode();
     clearModeTimers();
     mode = "groundpick";
     sitFlag = 0;
     pickRun = { phase: 0 };
     syncButtons();
+    return true;
   }
 
   // One blind kick (the duck can't see any ball - it's a scripted boot).
@@ -1761,7 +1808,7 @@ async function boot({ scene, camera, renderer }) {
     get sitFlag() { return sitFlag; },
     buildObs, cmd,
     velCmd: kbSource.command, lastAction, resetSim,
-    controller, kbSource, padSource,
+    controller, apiSource, microduckRpc, gatewayTransport, kbSource, padSource,
     spawnBall, triggerKick, triggerRoll, sessions, ort,
     get loco() { return loco; },
     get locoSwitching() { return locoSwitching; },
