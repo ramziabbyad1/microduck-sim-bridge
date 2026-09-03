@@ -9,6 +9,7 @@ import { useEffect, useRef, useState } from "react";
 import Box from "@mui/material/Box";
 import { keyframes } from "@mui/material/styles";
 import { useGame, gameApi, bootLog } from "../store.js";
+import { playBiosBeep, playBiosTick } from "../game/audio.js";
 import { INK, MONO } from "../theme.js";
 
 const postBlink = keyframes`
@@ -48,6 +49,10 @@ export default function BiosOverlay() {
     const store = useGame.getState;
     setVisible(true);
     useGame.setState({ biosVisible: true });
+    // POST beep: the replay only starts after the enter click (the audio
+    // unlock gesture), and the synth no-ops if the context is still locked
+    // (gamepad-only entry).
+    playBiosBeep();
     const postEl = postRef.current;
     // Seeded LCG: the replay rhythm is random-feeling but identical on
     // every load - real POST screens burst through most checks and stall
@@ -64,6 +69,7 @@ export default function BiosOverlay() {
         if (entry.halt) el.className = "halt";
         postEl.appendChild(el);
         els.set(entry, el);
+        playBiosTick(); // whisper-level teletype tick per printed line
         if (entry.status === null && !bootDone && !failed) {
           // Honest mode: show the stage label and hold while it's really
           // in flight, cursor blinking via CSS.
@@ -113,6 +119,7 @@ export default function BiosOverlay() {
     const ready = document.createElement("div");
     ready.textContent = "READY.";
     postEl.appendChild(ready);
+    playBiosTick();
     await sleep(500);
     setOff(true);
     // Wait out the 0.45 s opacity transition BEFORE cueing the draw-in:

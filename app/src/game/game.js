@@ -48,18 +48,25 @@ import { GamepadSource } from "./controls/gamepad.js";
 import { TouchSource } from "./controls/touch.js";
 import * as fx from "./fx/fx-wireframe.js";
 import { createCeremony, CAM_RESET_S } from "./ceremony.js";
+import {
+  audioCtx, busNode, preloadSfx, playSfx, playUrl, updateListener,
+  createEmitter, startAmbient, setAmbientDucked, playEntranceSweep,
+  playPropSweep, playLineBlip, setRumble,
+} from "./audio.js";
 import { createBallActor } from "./ball-actor.js";
 import { initGhosts } from "./ghosts.js";
 import { makeInfiniteGrid, makeArenaWalls } from "./arena.js";
 import { createBallVisual } from "./ball-visual.js";
 import { useGame, gameApi, bootLine, bootNote, bootHalt } from "../store.js";
 
-// Physics + inference runtimes stay on the CDN, exactly like the pre-Vite
-// app: mujoco.js resolves its .wasm sidecar relative to its own URL, and
-// onnxruntime fetches its wasm from wasmPaths - neither ever touches the
-// bundle. @vite-ignore keeps Rollup's static analysis out of it.
-const MUJOCO_URL = "https://cdn.jsdelivr.net/npm/@mujoco/mujoco@3.11.0/mujoco.js";
-const ORT_URL = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.27.0/dist/ort.min.mjs";
+// Physics + inference runtimes are vendored npm dependencies (no CDN):
+// everything visitors execute is built from package-lock-verified
+// tarballs and served from the Space itself, closing the jsDelivr
+// supply-chain surface. The .wasm binaries ride the bundle as hashed
+// assets via Vite ?url imports; the JS modules stay dynamic imports so
+// they land in their own lazy chunks like before.
+import mujocoWasmUrl from "@mujoco/mujoco/mujoco.wasm?url";
+import ortWasmUrl from "onnxruntime-web/ort-wasm-simd-threaded.wasm?url";
 
 let bootStarted = false;
 
@@ -123,15 +130,20 @@ async function boot({ scene, camera, renderer }) {
     );
   };
 
-  // ── Runtimes (CDN) ──────────────────────────────────────────────────
+  // ── Runtimes (vendored, lazy chunks) ─────────────────────────────────
   const [{ default: loadMujocoFactory }, ort] = await traced(
     "RUNTIME MODULES",
     Promise.all([
-      import(/* @vite-ignore */ MUJOCO_URL),
-      import(/* @vite-ignore */ ORT_URL),
+      import("@mujoco/mujoco"),
+      // wasm-only build: the sessions only ever use the "wasm" execution
+      // provider, and the default entry would emit the 26 MB WebGPU (jsep)
+      // wasm into the dist for nothing.
+      import("onnxruntime-web/wasm"),
     ]),
   );
-  ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.27.0/dist/";
+  // The bundler build embeds its JS loader; only the .wasm binary is
+  // fetched at runtime, from our own hashed asset.
+  ort.env.wasm.wasmPaths = { wasm: ortWasmUrl };
   ort.env.wasm.numThreads = 1; // static hosting sends no COOP/COEP headers
 
   // ── MJCF preparation ────────────────────────────────────────────────
@@ -243,7 +255,11 @@ async function boot({ scene, camera, renderer }) {
 
   // ── Boot physics + policy in parallel with the render rig ────────────
   const [mujoco, { xml, meshFiles }, k] = await Promise.all([
-    traced("MUJOCO WASM", loadMujocoFactory()),
+    traced("MUJOCO WASM", loadMujocoFactory({
+      // Emscripten sidecar resolution: point at the Vite-emitted asset
+      // instead of a path relative to the module's own URL.
+      locateFile: (p) => (p.endsWith(".wasm") ? mujocoWasmUrl : p),
+    })),
     traced("PHYSICS MJCF", buildPhysicsXml("robot_allcollisions.xml")),
     traced("KINEMATICS", loadKinematics(`${MODEL_DIR}/kinematics.json`)),
   ]);
@@ -348,6 +364,10 @@ async function boot({ scene, camera, renderer }) {
       standKeyId: mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_KEY.value, "STAND"),
       ballQposAdr: model.jnt("ball_freejoint").qposadr,
       ballDofAdr: model.jnt("ball_freejoint").dofadr,
+      // Foot bodies for the footstep audio heuristic (-1 when a variant
+      // has no ankles, e.g. if a future model renames them).
+      ankleIds: ["ankle_left", "ankle_right"].map(
+        (n) => mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY.value, n)),
       // Unactuated hinges (the roller variant's 4 passive wheels): not in
       // the obs or ctrl, but synced to the render rig so the wheels spin.
       extraJoints: kin.bodies
@@ -356,8 +376,8 @@ async function boot({ scene, camera, renderer }) {
     };
   }
   // Active-variant address block, swapped wholesale by activateLoco.
-  let { qposAdr, dofAdr, gyroAdr, trunkId, standKeyId, ballQposAdr, ballDofAdr, extraJoints } =
-    resolveAddrs(model, k);
+  let { qposAdr, dofAdr, gyroAdr, trunkId, standKeyId, ballQposAdr, ballDofAdr, extraJoints,
+    ankleIds } = resolveAddrs(model, k);
 
   // Locomotion variants stay resident once built (model + data + rig +
   // addresses); legs is registered when its render rig resolves below.
@@ -678,6 +698,130 @@ async function boot({ scene, camera, renderer }) {
     return null;
   }
 
+  // ── Sim-driven audio (footsteps / roller rumble / ball impacts) ──────
+  // Footsteps use a per-foot height heuristic instead of MuJoCo contacts
+  // (the WASM bindings expose no contact array): each ankle's height
+  // RELATIVE to the lower ankle (the planted foot approximates the local
+  // ground, so the measure self-calibrates on the relief terrain), with
+  // lift/contact hysteresis and a per-foot debounce. Tap gain scales with
+  // the landing speed. Rollers get a speed-following rumble loop instead,
+  // and the ball thumps on velocity deltas between control steps.
+  const STEP_LIFT = 0.012; // m above the planted foot = foot in swing
+  const STEP_CONTACT = 0.005; // m: dropping below this while in swing = step
+  const STEP_DEBOUNCE_MS = 130;
+  const stepFeet = [
+    { air: false, prevZ: 0, lastAt: 0 },
+    { air: false, prevZ: 0, lastAt: 0 },
+  ];
+  const duckEmitter = createEmitter({ refDistance: 0.5 });
+  const ballEmitter = createEmitter({ refDistance: 0.5 });
+  const ballPrevV = [0, 0, 0];
+  let ballPrevValid = false;
+  let ballThumpAt = 0;
+  // Body bumps: trunk velocity deltas gated on obstacle proximity (walls
+  // or prop collider footprints) so the walking gait's own accelerations
+  // (comparable in magnitude to a slow wall hit) never false-trigger.
+  // Duller than the ball thumps: same samples pitched way down.
+  const BUMP_DV = 0.35; // m/s per control step
+  const BUMP_DEBOUNCE_MS = 300; // rubbing a wall must not machine-gun
+  const BUMP_WALL_PAD = 0.16; // trunk half-width-ish reach to a wall
+  const bumpZones = propColliders().map((c) => {
+    const [px, py] = c.pos.split(" ").map(Number);
+    const [sx, sy] = c.size.split(" ").map(Number);
+    return { x: px, y: py, r: Math.hypot(sx, sy) + 0.14 };
+  });
+  const bumpPrevV = [0, 0, 0];
+  let bumpPrevValid = false;
+  let bumpAt = 0;
+  function nearObstacle(x, y) {
+    if (Math.max(Math.abs(x), Math.abs(y)) > ARENA_HALF - BUMP_WALL_PAD) return true;
+    for (const z of bumpZones) {
+      if (Math.hypot(x - z.x, y - z.y) < z.r) return true;
+    }
+    return false;
+  }
+
+  function stepAudioSim() {
+    const now = performance.now();
+    if (loco === "legs" && !inputLocked && ankleIds[0] >= 0 && ankleIds[1] >= 0) {
+      const xpos = data.xpos;
+      const zL = xpos[ankleIds[0] * 3 + 2];
+      const zR = xpos[ankleIds[1] * 3 + 2];
+      const ground = Math.min(zL, zR);
+      for (let i = 0; i < 2; i++) {
+        const f = stepFeet[i];
+        const z = i === 0 ? zL : zR;
+        const rel = z - ground;
+        const vz = (z - f.prevZ) / CTRL_DT;
+        f.prevZ = z;
+        if (rel > STEP_LIFT) {
+          f.air = true;
+        } else if (f.air && rel < STEP_CONTACT && vz < -0.02 &&
+                   now - f.lastAt > STEP_DEBOUNCE_MS) {
+          f.air = false;
+          f.lastAt = now;
+          const u = Math.min(1, Math.abs(vz) / 0.35);
+          playSfx("step", {
+            gain: 0.12 + 0.14 * u,
+            rate: 0.9 + Math.random() * 0.25,
+            out: duckEmitter.node,
+          });
+        }
+      }
+    }
+    // Roller rumble: gain and slight pitch follow ground speed.
+    const speed = Math.hypot(data.qvel[0], data.qvel[1]);
+    setRumble(
+      loco === "rollers" && !inputLocked ? Math.min(1, speed / 0.5) : 0,
+      duckEmitter,
+    );
+    // Body bumps: trunk |dv| against a nearby wall/prop. The proximity
+    // gate keeps gait/kick jerks (which rival slow wall hits) silent.
+    if (!inputLocked) {
+      const v = data.qvel;
+      if (bumpPrevValid) {
+        const dv = Math.hypot(v[0] - bumpPrevV[0], v[1] - bumpPrevV[1], v[2] - bumpPrevV[2]);
+        if (dv > BUMP_DV && now - bumpAt > BUMP_DEBOUNCE_MS &&
+            nearObstacle(data.qpos[0], data.qpos[1])) {
+          bumpAt = now;
+          const u = Math.min(1, (dv - BUMP_DV) / 1.5);
+          playSfx("thump", {
+            gain: 0.12 + 0.3 * u,
+            rate: 0.55 + 0.15 * u + Math.random() * 0.06, // way below the ball's range
+            out: duckEmitter.node,
+          });
+        }
+      }
+      bumpPrevV[0] = v[0]; bumpPrevV[1] = v[1]; bumpPrevV[2] = v[2];
+      bumpPrevValid = true;
+    } else {
+      bumpPrevValid = false;
+    }
+    // Ball impacts: |dv| between control steps. Gravity alone accounts for
+    // ~0.2 m/s per 20 ms step; the 0.5 threshold clears it and rolling noise.
+    if (ballActive) {
+      const v = data.qvel;
+      const b = ballDofAdr;
+      if (ballPrevValid) {
+        const dv = Math.hypot(
+          v[b] - ballPrevV[0], v[b + 1] - ballPrevV[1], v[b + 2] - ballPrevV[2]);
+        if (dv > 0.5 && now - ballThumpAt > 90) {
+          ballThumpAt = now;
+          const u = Math.min(1, (dv - 0.5) / 3.5); // full at kick-grade hits
+          playSfx("thump", {
+            gain: 0.14 + 0.4 * u,
+            rate: 1.25 - 0.45 * u + Math.random() * 0.08,
+            out: ballEmitter.node,
+          });
+        }
+      }
+      ballPrevV[0] = v[b]; ballPrevV[1] = v[b + 1]; ballPrevV[2] = v[b + 2];
+      ballPrevValid = true;
+    } else {
+      ballPrevValid = false;
+    }
+  }
+
   async function controlStep() {
     driveRelief(CTRL_DT); // kinematic terrain, written before the physics steps
     // Settle phase: ctrl frozen on the pose held at the fall (approximates
@@ -694,6 +838,7 @@ async function boot({ scene, camera, renderer }) {
       applyGrabForce(); // mouse perturbation, fresh velocity every substep
       mujoco.mj_step(model, data);
     }
+    stepAudioSim(); // footsteps / rumble / ball thumps off the fresh state
 
     const death = poseIsDead();
     if (death === "exploded") {
@@ -925,7 +1070,7 @@ async function boot({ scene, camera, renderer }) {
     loco = name;
     scene.remove(rig.placer);
     ({ model, data, rig, trunkGroup, qposAdr, dofAdr, gyroAdr, trunkId,
-       standKeyId, ballQposAdr, ballDofAdr, extraJoints } = L);
+       standKeyId, ballQposAdr, ballDofAdr, extraJoints, ankleIds } = L);
     // The rig may have been built (or last shown) under another colourway.
     applyVariant(rig, currentVariant);
     scene.add(rig.placer);
@@ -992,7 +1137,28 @@ async function boot({ scene, camera, renderer }) {
       if (!v && ball && !ballActive) spawnBall({ fromQueue: true });
     },
     flashReset: () => {},
+    // Audio twins of the wireframe materialize FX (entrance and respawns):
+    // the duck's hero sweep spans the FX's exact duration and follows its
+    // ease-out; each prop's scan gets its own smaller, size-pitched sweep
+    // the frame it starts; each arena line drawing in gets a tiny blip.
+    onScanCue: (durS) => playEntranceSweep(durS),
+    onPropCue: (durS) => playPropSweep(durS),
+    onLineCue: (u) => playLineBlip(u),
   });
+
+  // ── Ambient bed lifecycle ─────────────────────────────────────────────
+  // The Waddle-in click latches `entered` and doubles as the unlock
+  // gesture; the hum starts there and ducks whenever the pause/title
+  // overlay comes back up. fireImmediately covers ?boot=1 (already
+  // entered by the time the game boots).
+  useGame.subscribe((s) => s.entered, (entered) => {
+    if (!entered) return;
+    audioCtx();
+    preloadSfx();
+    startAmbient();
+  }, { fireImmediately: true });
+  useGame.subscribe((s) => s.menuOpen, (open) => setAmbientDucked(open),
+    { fireImmediately: true });
 
   const { group: ballGroup, mesh: ballMesh } = createBallVisual(renderer);
   scene.add(ballGroup);
@@ -1291,19 +1457,12 @@ async function boot({ scene, camera, renderer }) {
   let padJaw = 0;
   const CHIRP_TAKES = "abcdefghijkl";
   const VOICE_BANK = { classic: "duck1", charcoal: "duck2", purple: "duck3", blue: "duck4" };
-  const chirpCache = new Map();
   function playChirp() {
     const bank = VOICE_BANK[currentVariant] ?? "duck1";
     const take = CHIRP_TAKES[(Math.random() * CHIRP_TAKES.length) | 0];
-    const url = signed(`./assets/voices/${bank}/chirp_${take}.wav`);
-    let a = chirpCache.get(url);
-    if (!a) {
-      a = new Audio(url);
-      a.volume = 0.7;
-      chirpCache.set(url, a);
-    }
-    a.currentTime = 0;
-    a.play().catch(() => {});
+    // Decoded through the shared context on the voice bus (used to be a
+    // bare HTMLAudio element outside the master gain).
+    playUrl(signed(`./assets/voices/${bank}/chirp_${take}.wav`), { gain: 0.7 });
   }
   const quackLoud = () => {
     quackAt = performance.now();
@@ -1385,7 +1544,7 @@ async function boot({ scene, camera, renderer }) {
   }
   async function startWheee() {
     stopWheee({ silent: true }); // a re-press replaces the current ride
-    wheeeCtx ??= new (window.AudioContext ?? window.webkitAudioContext)();
+    wheeeCtx ??= audioCtx(); // shared game context, ride lands on the voice bus
     if (wheeeCtx.state === "suspended") wheeeCtx.resume().catch(() => {});
     const bank = VOICE_BANK[currentVariant] ?? "duck1";
     const take = WHEEE_TAKES[(Math.random() * WHEEE_TAKES.length) | 0];
@@ -1399,7 +1558,7 @@ async function boot({ scene, camera, renderer }) {
     }
     if (wheeeRide !== ride) return; // released (or replaced) during decode
     const gain = wheeeCtx.createGain();
-    gain.connect(wheeeCtx.destination);
+    gain.connect(busNode("voice"));
     const t0 = wheeeCtx.currentTime + 0.02;
     // The loop is steady-state audio (no authored attack): a ~20 ms fade-in
     // makes a clean note onset instead of a click. Constant gain after that.
@@ -1548,6 +1707,14 @@ async function boot({ scene, camera, renderer }) {
     syncRig();
     syncJaw();
     ghosts?.update();
+    // Spatial audio follows the movers: listener on the camera, emitters
+    // on the duck trunk and the ball (MJCF Z-up -> three Y-up).
+    updateListener(camera);
+    duckEmitter.setPosition(data.qpos[0], data.qpos[2], -data.qpos[1]);
+    if (ballActive) {
+      const q = data.qpos;
+      ballEmitter.setPosition(q[ballQposAdr], q[ballQposAdr + 2], -q[ballQposAdr + 1]);
+    }
     controls.update();
     updateChaseCam();
     ceremony.drive();

@@ -243,6 +243,39 @@ function makeWallGridMaterial(alongX) {
   });
 }
 
+// Entrance draw-in cue schedule, for the ceremony's per-line audio blips.
+// Replicates the shaders' hashed stagger EXACTLY (same hash, same t0 /
+// spread constants, same line ids as drawLine's floor(rs + 0.5)), so each
+// blip lands the instant its line starts drawing. Times are normalized to
+// the respective reveal (0..1); the ceremony maps them to seconds with its
+// own grid/wall reveal durations. `u` is the line's jitter, reused by the
+// audio side for per-line pitch variation. The four walls share one id
+// space, so their lines draw (and blip) in unison - one cue each.
+const jitHash = (x) => {
+  const s = Math.sin(x * 127.1) * 43758.5453;
+  return s - Math.floor(s);
+};
+export function entranceLineCues() {
+  const grid = [];
+  const walls = [];
+  // Floor: 6 section lines per axis (world x in {-1.5..1.5} step 0.6 maps
+  // to ids -2..3); the z family is offset by 57 in the shader.
+  for (let i = -2; i <= 3; i++) {
+    const jx = jitHash(i);
+    const jz = jitHash(i + 57);
+    grid.push({ at: 0.00 + jx * 0.30, u: jx });
+    grid.push({ at: 0.05 + jz * 0.30, u: jz });
+  }
+  // Walls: one horizontal section line (the y = 0 base, id 0) and 6
+  // verticals (ids -2..3 offset by 31), per the 0.25 m wall height.
+  walls.push({ at: 0.00 + jitHash(0) * 0.30, u: jitHash(0) });
+  for (let i = -2; i <= 3; i++) {
+    const j = jitHash(i + 31);
+    walls.push({ at: 0.30 + j * 0.30, u: j });
+  }
+  return { grid, walls };
+}
+
 // The four wall planes at their inner faces (three coords: MJCF x -> x,
 // MJCF y -> -z). Returns the meshes plus their materials (the ceremony and
 // the per-frame focus update both need the material list).

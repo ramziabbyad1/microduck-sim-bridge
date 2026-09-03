@@ -1,7 +1,8 @@
 // App shell: layers in z order - scene canvas (1), halftone (2), CRT (5),
-// HUD + touch overlay (9-12), BIOS readout (20), title menu (30), preboot
-// veil (40). Also owns the pre-game device detection (gamepad, touch) and
-// the preboot -> title -> enter flow.
+// HUD + touch overlay (9-12), BIOS readout (20), title menu (30). Also owns
+// the pre-game device detection (gamepad, touch) and the title -> enter
+// flow. The title menu carries its own loading gate (single central
+// spinner), so no separate preboot veil.
 import { useEffect } from "react";
 import GameCanvas from "./scene/GameCanvas.jsx";
 import { Halftone, CrtOverlay } from "./ui/Overlays.jsx";
@@ -9,9 +10,7 @@ import Hud from "./ui/Hud.jsx";
 import TouchOverlay from "./ui/TouchOverlay.jsx";
 import BiosOverlay from "./ui/BiosOverlay.jsx";
 import TitleMenu from "./ui/TitleMenu.jsx";
-import Preboot from "./ui/Preboot.jsx";
 import { useGame } from "./store.js";
-import { signed } from "./game/signed.js";
 
 export default function App() {
   useEffect(() => {
@@ -42,26 +41,13 @@ export default function App() {
     window.addEventListener("touchstart", armTouch, { once: true, passive: true });
     if (params.get("touch") === "1") armTouch();
 
-    // Preboot veil: hold the title page until its logo and the fonts are
-    // in (grey spinner meanwhile), capped so a broken asset can never wall
-    // the menu off. ?boot=1 skips the title entirely - testing hook.
+    // The title menu opens right away and holds its own loading gate
+    // (central spinner) until logo, fonts, duck stage and game boot are
+    // in. ?boot=1 skips the title entirely - testing hook.
     if (params.get("boot") === "1") {
       useGame.setState({ prebootDone: true, entered: true, menuOpen: false });
     } else {
-      const img = new Image();
-      img.src = signed("./assets/duck-head-mark.webp");
-      const imgReady = new Promise((res) => {
-        if (img.complete && img.naturalWidth) res();
-        else {
-          img.addEventListener("load", res, { once: true });
-          img.addEventListener("error", res, { once: true });
-        }
-      });
-      const fontsReady = document.fonts?.ready ?? Promise.resolve();
-      const cap = new Promise((res) => setTimeout(res, 2500));
-      Promise.race([Promise.all([imgReady, fontsReady]), cap]).then(() => {
-        useGame.setState({ prebootDone: true, menuOpen: true });
-      });
+      useGame.setState({ prebootDone: true, menuOpen: true });
     }
 
     return () => {
@@ -81,7 +67,6 @@ export default function App() {
       <TouchOverlay />
       <BiosOverlay />
       <TitleMenu />
-      <Preboot />
     </>
   );
 }

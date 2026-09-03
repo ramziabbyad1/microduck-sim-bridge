@@ -14,6 +14,8 @@
 // rl.js injects the world (rig, grid, camera reset) and the lock/flash
 // callbacks; this file never touches MuJoCo.
 
+import { entranceLineCues } from "./arena.js";
+
 export const CAM_RESET_S = 0.9;
 export const RESPAWN_SCAN_AT = 0.8; // cue scan-up at 80% of the camera glide
 
@@ -29,12 +31,28 @@ export function createCeremony({
   getRig, grid, wallMats,
   syncRig, startCameraReset,
   setLocked, flashReset,
+  onScanCue = () => {},
+  onLineCue = () => {},
+  onPropCue = () => {},
 }) {
   const ENTRANCE_TOTAL_S = Math.max(
     ENTRANCE_GRID_S,
     ENTRANCE_WALL_DELAY_S + ENTRANCE_WALL_S,
     ENTRANCE_FX_START_S + fx.TOTAL_S,
   );
+
+  // Per-line audio cues for the entrance draw-in: normalized reveal times
+  // from arena.js (exact same hashed stagger as the shaders), mapped onto
+  // this timeline's grid/wall reveal windows. Entrance-only: respawns
+  // never redraw the arena.
+  const cues = entranceLineCues();
+  const lineCues = [
+    ...cues.grid.map((c) => ({ at: c.at * ENTRANCE_GRID_S, u: c.u })),
+    ...cues.walls.map((c) => ({
+      at: ENTRANCE_WALL_DELAY_S + c.at * ENTRANCE_WALL_S, u: c.u,
+    })),
+  ].sort((a, b) => a.at - b.at);
+  let lineCueIdx = lineCues.length; // parked until startEntrance
 
   let fxRig = null;
   let fxPrev = null;
@@ -67,6 +85,9 @@ export function createCeremony({
     fx.start();
     fxPrev = performance.now();
     propsCue();
+    // Sound cue riding the same trigger as the visual scan; the duration
+    // lets the sweep span the materialize exactly.
+    onScanCue(fx.TOTAL_S);
   }
   function propsCue() {
     const now = performance.now();
@@ -105,6 +126,10 @@ export function createCeremony({
       if (p.at === null || now < p.at) continue;
       if (!p.started) {
         p.fx.start();
+        // Audio twin, cued the frame this prop's scan actually starts;
+        // TOTAL_S carries the size-stretched duration so the sound can
+        // match both length and register.
+        onPropCue(p.fx.TOTAL_S);
         p.started = true;
         p.prev = now;
         continue;
@@ -130,6 +155,7 @@ export function createCeremony({
     if (entranceT0 !== null || entranceDone) return;
     entranceT0 = performance.now();
     entranceFxCued = false;
+    lineCueIdx = 0;
     grid.material.uniforms.uReveal.value = 0;
     for (const m of wallMats) m.uniforms.uReveal.value = 0;
   }
@@ -137,6 +163,11 @@ export function createCeremony({
   function driveEntrance() {
     if (entranceT0 === null) return;
     const t = (performance.now() - entranceT0) / 1000;
+    // Fire the per-line blips as their lines start drawing in.
+    while (lineCueIdx < lineCues.length && lineCues[lineCueIdx].at <= t) {
+      onLineCue(lineCues[lineCueIdx].u);
+      lineCueIdx++;
+    }
     grid.material.uniforms.uReveal.value = clamp01(t / ENTRANCE_GRID_S);
     const wallR = clamp01((t - ENTRANCE_WALL_DELAY_S) / ENTRANCE_WALL_S);
     for (const m of wallMats) m.uniforms.uReveal.value = wallR;

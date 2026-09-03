@@ -72,6 +72,8 @@ Plug in a controller and the same mapping as the real robot runtime applies:
 - D-pad down: sit / stand toggle (legs only)
 - D-pad up: hold ~1 s to switch legs <-> rollers (the real robot uses a 3 s hold)
 - Right trigger: mouth (analog) + quack
+- A: enter / resume the game while the title or pause overlay is up
+- Menu/Start (or Select): exit back to the title overlay while in-game
 
 ## Multiplayer ghosts
 

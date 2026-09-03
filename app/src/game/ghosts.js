@@ -9,9 +9,23 @@
 // on the private Space those need the ?__sign JWT that only rl.js knows
 // how to append, so all rig helpers arrive through init parameters.
 
-const TRYSTERO_URL = "https://esm.run/trystero@0.25.3/nostr";
 const APP_ID = "microduck-sandbox";
 const ROOM = "lobby";
+// Explicit relay list instead of Trystero's default appId-seeded pick.
+// The deterministic subset that "microduck-sandbox" draws from the default
+// pool rotted away (2026-09 audit: 3 relays dead, 1 rejecting ephemeral
+// events, 1 rate-limiting), which silently killed ghost discovery in prod.
+// These were verified live to accept AND route Trystero's ephemeral
+// events; the warnOnRelayFailure path logs any that decay later.
+const RELAY_URLS = [
+  "wss://relay.damus.io",
+  "wss://nos.lol",
+  "wss://nostr.tegila.com.br",
+  "wss://staging.yabu.me",
+  "wss://social.amanah.eblessing.co",
+  "wss://relay-rpi.edufeed.org",
+  "wss://strfry.shock.network",
+];
 const MAX_GHOSTS = 3;
 const SEND_HZ = 15;
 const GHOST_OPACITY = 0.35;
@@ -73,8 +87,10 @@ export async function initGhosts(env) {
   };
   let room;
   try {
-    const { joinRoom } = await import(/* @vite-ignore */ TRYSTERO_URL);
-    room = joinRoom({ appId: APP_ID }, ROOM);
+    // Vendored npm dep (was esm.run); dynamic so it stays a lazy chunk
+    // loaded only when the ghost session actually starts.
+    const { joinRoom } = await import("trystero/nostr");
+    room = joinRoom({ appId: APP_ID, relayConfig: { urls: RELAY_URLS } }, ROOM);
   } catch (e) {
     console.warn("ghosts disabled (signaling unavailable):", e);
     return noop;

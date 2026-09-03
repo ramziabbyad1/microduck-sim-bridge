@@ -19,6 +19,7 @@ import Box from "@mui/material/Box";
 import { keyframes } from "@mui/material/styles";
 import { useGame, gameApi } from "../store.js";
 import { VARIANT_LABELS, VARIANT_SWATCH_HEX } from "../game/variants.js";
+import { uiClick, isMuted, setMuted } from "../game/audio.js";
 import { ORANGE, MONO } from "../theme.js";
 import { ANTON, COMIC_INK, CREAM } from "./comic.jsx";
 
@@ -157,6 +158,34 @@ function HudPlate({ caption, captionSide = "left", captionFill = "cream", childr
   );
 }
 
+// Speaker icon in the same square-stroke language as the back arrow:
+// body + cone always, waves when live, a hard ink cross when muted.
+function SpeakerIcon({ muted }) {
+  return (
+    <Box
+      component="svg"
+      viewBox="0 0 24 24"
+      aria-hidden
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2.25}
+      strokeLinecap="square"
+      strokeLinejoin="miter"
+      sx={{ width: "1.05em", height: "1.05em", display: "block", flex: "none" }}
+    >
+      <path d="M4 9h4l5-4v14l-5-4H4z" />
+      {muted ? (
+        <path d="M16 9l6 6M22 9l-6 6" />
+      ) : (
+        <>
+          <path d="M16 9.5a3.5 3.5 0 0 1 0 5" />
+          <path d="M18.5 7a7 7 0 0 1 0 10" />
+        </>
+      )}
+    </Box>
+  );
+}
+
 function BackArrowIcon() {
   return (
     <Box
@@ -215,7 +244,7 @@ function BackButton() {
       <Box
         component="button"
         type="button"
-        onClick={() => useGame.setState({ menuOpen: true })}
+        onClick={() => { uiClick(); useGame.setState({ menuOpen: true }); }}
         sx={{
           ...hudHitSx,
           "&:hover": {
@@ -231,9 +260,12 @@ function BackButton() {
   );
 }
 
-const SHOP_URL = "https://store.pollen-robotics.com/collections/microduck";
+export const SHOP_URL = "https://store.pollen-robotics.com/collections/microduck";
 
-function PreorderButton() {
+// Exported: the title/pause overlay renders the same plate in the same
+// spot, so the pause fade reads as the button staying put, not two
+// different buttons swapping.
+export function PreorderButton({ sx }) {
   const locoWant = useGame((s) => s.locoWant);
   const text = useScramble(locoWant === "rollers" ? "Pre-order pack" : "Pre-order");
   return (
@@ -241,13 +273,14 @@ function PreorderButton() {
       caption="Shop"
       captionSide="right"
       captionFill="orange"
-      sx={{ position: "fixed", top: "1.25rem", right: "1.5rem", zIndex: 10 }}
+      sx={{ position: "fixed", top: "1.25rem", right: "1.5rem", zIndex: 10, ...sx }}
     >
       <Box
         component="a"
         href={SHOP_URL}
         target="_blank"
         rel="noopener noreferrer"
+        onClick={() => uiClick()}
         sx={{
           ...hudHitSx,
           background: ORANGE,
@@ -301,7 +334,7 @@ function Quickbar() {
                 title={label}
                 aria-label={`${label} colours`}
                 aria-pressed={selected}
-                onClick={() => gameApi.setVariant?.(name)}
+                onClick={() => { uiClick(); gameApi.setVariant?.(name); }}
                 sx={{
                   appearance: "none",
                   width: CELL_H, // square cell inside frame + padding
@@ -351,7 +384,7 @@ function Quickbar() {
                 component="button"
                 type="button"
                 aria-pressed={selected}
-                onClick={() => gameApi.requestLoco?.(name)}
+                onClick={() => { uiClick(); gameApi.requestLoco?.(name); }}
                 sx={{
                   ...hudHitSx,
                   px: "1.05rem",
@@ -370,7 +403,46 @@ function Quickbar() {
           })}
         </Box>
       </HudPlate>
+      {/* Sound is fully disabled for now (SOUND_DISABLED in audio.js);
+          re-enable this toggle together with that flag. */}
+      {/* <SoundToggle /> */}
     </Box>
+  );
+}
+
+// Mute / unmute panel: same cartouche language as the other groups. The
+// toggle ramps audio.js's master gain (~50 ms) and persists; unmuting
+// plays the HUD click as confirmation (muting stays silent, obviously).
+function SoundToggle() {
+  const [muted, setMutedState] = useState(isMuted);
+  const toggle = () => {
+    const next = !muted;
+    setMuted(next);
+    setMutedState(next);
+    if (!next) uiClick();
+  };
+  return (
+    <HudPlate caption="Sound">
+      <Box
+        component="button"
+        type="button"
+        aria-label={muted ? "Unmute sound" : "Mute sound"}
+        aria-pressed={muted}
+        onClick={toggle}
+        sx={{
+          ...hudHitSx,
+          px: "0.75rem",
+          color: muted ? "rgba(250, 248, 242, 0.5)" : CREAM,
+          "&:hover": {
+            color: muted ? CREAM : ORANGE,
+            background: "rgba(255, 122, 47, 0.12)",
+          },
+          "&:active": { filter: "brightness(0.92)" },
+        }}
+      >
+        <SpeakerIcon muted={muted} />
+      </Box>
+    </HudPlate>
   );
 }
 

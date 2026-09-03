@@ -1,8 +1,14 @@
+import { lazy, Suspense } from "react";
 import { createRoot } from "react-dom/client";
 import { ThemeProvider } from "@mui/material/styles";
 import CssBaseline from "@mui/material/CssBaseline";
 import { theme } from "./theme.js";
-import App from "./App.jsx";
+
+// ?soundboard=1: standalone audio A/B experiment page instead of the game
+// (lazy on both sides so the soundboard never pulls the game bundle in).
+const App = new URLSearchParams(location.search).get("soundboard") === "1"
+  ? lazy(() => import("./ui/Soundboard.jsx"))
+  : lazy(() => import("./App.jsx"));
 
 // Build tag: bump to change the bundle's content hash, e.g. to bust a stale
 // edge-cached asset URL on the HF Space.
@@ -14,6 +20,8 @@ console.info(`Microduck build ${BUILD_TAG}`);
 createRoot(document.getElementById("root")).render(
   <ThemeProvider theme={theme}>
     <CssBaseline />
-    <App />
+    <Suspense fallback={null}>
+      <App />
+    </Suspense>
   </ThemeProvider>,
 );
