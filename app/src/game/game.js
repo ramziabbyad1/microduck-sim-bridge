@@ -2087,17 +2087,34 @@ async function boot({ scene, camera, renderer }) {
         (l ? (locos.rollers?.rig ?? ghostRollerRig ?? locos.legs.rig) : locos.legs.rig),
       hasRigFor: (l) => !l || !!(locos.rollers || ghostRollerRig),
       prepareRigFor: (l) => { if (l) ensureGhostRollerRig(); },
+      // Ghost ball visual: shares the local ball's geometry and clones its
+      // material (ghosts.js makes it translucent). Same Z-up group trick
+      // as createBallVisual - the mesh takes the raw MJCF free-joint pose.
+      makeGhostBall: () => {
+        const group = new THREE.Group();
+        group.rotation.x = -Math.PI / 2;
+        const mesh = new THREE.Mesh(ballMesh.geometry, ballMesh.material.clone());
+        group.add(mesh);
+        return { group, mesh };
+      },
       getLocalState: () => {
         const qpos = data.qpos;
         const j = new Array(NUM_JOINTS);
         for (let i = 0; i < NUM_JOINTS; i++) j[i] = r3(qpos[qposAdr[i]]);
-        return {
+        const st = {
           p: [r3(qpos[0]), r3(qpos[1]), r3(qpos[2]), r3(qpos[3]), r3(qpos[4]), r3(qpos[5]), r3(qpos[6])],
           j,
           w: r3(jawOpenNow()),
           v: currentVariant,
           l: loco === "rollers" ? 1 : 0,
         };
+        // Ball free-joint pose, only while a ball is in play (old clients
+        // ignore the extra field; absent = no ball on this peer's field).
+        if (ballActive) {
+          const a = ballQposAdr;
+          st.b = [r3(qpos[a]), r3(qpos[a + 1]), r3(qpos[a + 2]), r3(qpos[a + 3]), r3(qpos[a + 4]), r3(qpos[a + 5]), r3(qpos[a + 6])];
+        }
+        return st;
       },
     });
     liveGhostSessions.add(ghosts);

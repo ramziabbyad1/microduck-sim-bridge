@@ -195,6 +195,7 @@ export async function initGhosts(env) {
   // stay behind the delayed render time).
   const snapOf = (state, prevAt = -Infinity) => ({
     p: state.p, j: state.j, w: state.w ?? 0,
+    b: state.b ?? null, // ball free-joint pose, or null while none in play
     at: Math.max(performance.now(), prevAt + RESPACE_MIN_MS),
   });
   const makeGhost = (state) => {
@@ -214,6 +215,7 @@ export async function initGhosts(env) {
     return {
       rig, trunk, buf: [snapOf(state)],
       variant: state.v, loco: served,
+      ball: null, // { group, mesh } lazily built on the first ball pose
       gapAvg: 1000 / SEND_HZ, // measured arrival cadence, ms
       delay: INTERP_DELAY_MS, // current playback delay, ms
     };
@@ -230,6 +232,10 @@ export async function initGhosts(env) {
         o.material.dispose();
       }
     });
+    if (g.ball) {
+      scene.remove(g.ball.group);
+      g.ball.mesh.material.dispose(); // cloned per ghost; geometry is shared
+    }
     ghosts.delete(peerId);
   };
 
@@ -242,6 +248,7 @@ export async function initGhosts(env) {
     finiteArray(state.p, 7) &&
     finiteArray(state.j, jointNames.length) &&
     (state.w == null || Number.isFinite(state.w)) &&
+    (state.b == null || finiteArray(state.b, 7)) && // ball pose, optional
     typeof state.v === "string";
   const warnedPeers = new Set(); // one malformed-payload warn per peer
 
@@ -383,6 +390,49 @@ export async function initGhosts(env) {
   // instances, cloned here from any node of the already-built local rig.
   const _qa = env.rig.placer.quaternion.clone();
   const _qb = env.rig.placer.quaternion.clone();
+
+  // Ghost ball: the peer's soccer ball as the same translucent shell as
+  // its duck. Built lazily on the first snapshot carrying a ball pose
+  // (env.makeGhostBall shares the local ball's geometry and clones its
+  // material), shown only while the ghost itself is revealed, hidden the
+  // moment the peer's ball despawns (b turns null in the stream). Poses
+  // interpolate like the trunk; on a spawn/despawn edge where only one
+  // bracketing snapshot has a ball, it snaps to that pose instead of
+  // lerping from nowhere. A single convex mesh needs no depth-prepass
+  // twin - plain transparent blending reads fine on a sphere.
+  const driveBall = (g, ab, bb, u) => {
+    if (!ab && !bb) {
+      if (g.ball) g.ball.group.visible = false;
+      return;
+    }
+    if (!g.ball) {
+      if (!env.makeGhostBall) return; // host without ball support
+      const ball = env.makeGhostBall();
+      const m = ball.mesh.material;
+      m.transparent = true;
+      m.opacity = GHOST_OPACITY;
+      m.depthWrite = false;
+      ball.mesh.renderOrder = BEAUTY_ORDER;
+      scene.add(ball.group);
+      g.ball = ball;
+    }
+    g.ball.group.visible = g.revealed;
+    const mesh = g.ball.mesh;
+    if (ab && bb) {
+      mesh.position.set(
+        ab[0] + (bb[0] - ab[0]) * u,
+        ab[1] + (bb[1] - ab[1]) * u,
+        ab[2] + (bb[2] - ab[2]) * u,
+      );
+      _qa.set(ab[4], ab[5], ab[6], ab[3]); // MJCF wxyz -> THREE xyzw
+      _qb.set(bb[4], bb[5], bb[6], bb[3]);
+      mesh.quaternion.copy(_qa.slerp(_qb, u));
+    } else {
+      const s = ab ?? bb;
+      mesh.position.set(s[0], s[1], s[2]);
+      mesh.quaternion.set(s[4], s[5], s[6], s[3]);
+    }
+  };
   let lastUpdateAt = performance.now(); // update() frame clock for the delay slew
   const api = {
     room,
@@ -409,7 +459,7 @@ export async function initGhosts(env) {
       [...ghosts.values()]
         .filter((g) => g.revealed)
         .map((g) => ({ x: g.trunk.position.x, y: g.trunk.position.y })),
-    debug: () => [...ghosts.values()].map((g) => {
+    debug: () => [...ghosts.entries()].map(([peerId, g]) => {
       let meshes = 0, visible = 0, op = null, twins = 0;
       g.rig.root.traverse((o) => {
         if (!o.isMesh) return;
@@ -417,7 +467,10 @@ export async function initGhosts(env) {
         meshes++; if (o.visible) visible++; op ??= o.material.opacity;
       });
       const w = g.trunk.getWorldPosition(g.trunk.position.clone());
-      return { p: g.trunk.position.toArray(), world: w.toArray(), inScene: !!g.rig.placer.parent, revealed: g.revealed, meshes, visible, twins, op, v: g.variant, l: g.loco, gapAvg: g.gapAvg, delay: g.delay, bufLen: g.buf.length };
+      const ball = g.ball
+        ? { visible: g.ball.group.visible, p: g.ball.mesh.position.toArray() }
+        : null;
+      return { peerId, p: g.trunk.position.toArray(), world: w.toArray(), inScene: !!g.rig.placer.parent, revealed: g.revealed, meshes, visible, twins, op, v: g.variant, l: g.loco, ball, gapAvg: g.gapAvg, delay: g.delay, bufLen: g.buf.length };
     }),
     update() {
       const now = performance.now();
@@ -460,6 +513,7 @@ export async function initGhosts(env) {
           setJoint(g.rig, jointNames[i], a.j[i] + (b.j[i] - a.j[i]) * u);
         }
         setJawOpen(g.rig, a.w + (b.w - a.w) * u);
+        driveBall(g, a.b, b.b, u);
       }
     },
   };
