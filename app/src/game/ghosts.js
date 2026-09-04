@@ -53,6 +53,9 @@ const RESPACE_MIN_MS = 1000 / SEND_HZ / 2; // de-jitter floor between stamps
 const GAP_RELEASE = 0.15; // per-packet EWMA rate when arrivals speed up
 const DELAY_SLEW = 0.5; // max delay change per ms of real time
 const BUF_MAX = 40; // snapshots kept per ghost (~2.5 s at 15 Hz)
+// Floor between legs<->rollers ghost rebuilds for one peer: a rebuild
+// clones a full rig, so the rate is capped against flag-flapping peers.
+const LOCO_SWAP_MIN_MS = 500;
 // Idle visitors stay invisible: a ghost is only shown once its peer has
 // strayed from the pose of its first state message (everyone spawns at
 // the arena center). Once revealed it stays visible for the whole peer
@@ -294,14 +297,19 @@ export async function initGhosts(env) {
     // cloneRig shares geometry). The snapshot buffer carries over so the
     // interpolated motion stays continuous across the swap. While the
     // wanted rig is still loading, keep warming it and stay on legs.
+    // Rate-limited per peer: the lobby is public, so a hostile peer
+    // flapping the flag at packet rate must not turn into a 15 Hz
+    // teardown/rebuild loop on every viewer's tab (a real switch takes a
+    // ~1 s button hold, so legit swaps are never this close together).
     if (state.l !== g.loco) {
+      const now = performance.now();
       if (servedLoco(state.l) !== state.l) {
         env.prepareRigFor?.(state.l);
-      } else {
+      } else if (now - (g.locoSwapAt ?? 0) >= LOCO_SWAP_MIN_MS) {
         const { lastSeen, spawn, revealed, buf, gapAvg, delay } = g;
         removeGhost(peerId);
         g = makeGhost(state);
-        Object.assign(g, { lastSeen, spawn, revealed, buf, gapAvg, delay });
+        Object.assign(g, { lastSeen, spawn, revealed, buf, gapAvg, delay, locoSwapAt: now });
         g.rig.placer.visible = revealed;
         ghosts.set(peerId, g);
         return;
