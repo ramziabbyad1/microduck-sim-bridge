@@ -58,9 +58,10 @@ hints fade out; play the ball by driving into it.
   error...) freeze the console on a `SYSTEM HALTED` screen with the error
   detail - handy for debugging.
 
-The ball is local-only: it lives in your tab's physics and is not shared
-with the multiplayer ghosts. A square arena (3 x 3 m) fences the play
-area so neither the ball nor the duck can wander off.
+The ball's physics are local to your tab, but its pose is broadcast with
+your duck's, so other visitors see a translucent copy of your ball next
+to your ghost (and you see theirs). A square arena (3 x 3 m) fences the
+play area so neither the ball nor the duck can wander off.
 
 ### Gamepad
 
@@ -121,6 +122,18 @@ UI intents in).
   forth is instant.
 
 ## Development
+
+Large binary assets (robot meshes, GLB models, ONNX policies) are stored
+with [Git LFS](https://git-lfs.com/). Clone with LFS installed, or pull
+the real files after a plain clone - otherwise the app boots against
+text pointer files and fails with errors like
+`SyntaxError: Unexpected token 'v', "version ht"... is not valid JSON`
+(that string is the start of an LFS pointer, not your model):
+
+```bash
+git lfs install   # once per machine
+git lfs pull      # fetch the actual binaries in an existing clone
+```
 
 ```bash
 cd app
