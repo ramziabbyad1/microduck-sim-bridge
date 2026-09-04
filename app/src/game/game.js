@@ -45,6 +45,7 @@ import {
 import { Controller } from "./controls/controller.js";
 import { KeyboardSource } from "./controls/keyboard.js";
 import { GamepadSource } from "./controls/gamepad.js";
+import { haptics } from "./haptics.js";
 import { TouchSource } from "./controls/touch.js";
 import * as fx from "./fx/fx-wireframe.js";
 import { createCeremony, CAM_RESET_S } from "./ceremony.js";
@@ -769,12 +770,12 @@ async function boot({ scene, camera, renderer }) {
         }
       }
     }
-    // Roller rumble: gain and slight pitch follow ground speed.
+    // Roller rumble: gain and slight pitch follow ground speed - and the
+    // pad's haptic bed mirrors it (texture on the weak motor).
     const speed = Math.hypot(data.qvel[0], data.qvel[1]);
-    setRumble(
-      loco === "rollers" && !inputLocked ? Math.min(1, speed / 0.5) : 0,
-      duckEmitter,
-    );
+    const rollLevel = loco === "rollers" && !inputLocked ? Math.min(1, speed / 0.5) : 0;
+    setRumble(rollLevel, duckEmitter);
+    haptics.setBed(rollLevel);
     // Body bumps: trunk |dv| against a nearby wall/prop. The proximity
     // gate keeps gait/kick jerks (which rival slow wall hits) silent.
     if (!inputLocked) {
@@ -790,6 +791,7 @@ async function boot({ scene, camera, renderer }) {
             rate: 0.55 + 0.15 * u + Math.random() * 0.06, // way below the ball's range
             out: duckEmitter.node,
           });
+          haptics.pulse("bump", 0.5 + 0.5 * u); // shove felt in the hands
         }
       }
       bumpPrevV[0] = v[0]; bumpPrevV[1] = v[1]; bumpPrevV[2] = v[2];
@@ -813,6 +815,12 @@ async function boot({ scene, camera, renderer }) {
             rate: 1.25 - 0.45 * u + Math.random() * 0.08,
             out: ballEmitter.node,
           });
+          // Haptics only when the duck plausibly caused/received the hit:
+          // a far bounce off a wall shouldn't shake the hands.
+          const bq = ballQposAdr;
+          const dBall = Math.hypot(
+            data.qpos[bq] - data.qpos[0], data.qpos[bq + 1] - data.qpos[1]);
+          if (dBall < 0.6) haptics.pulse("ballHit", 0.4 + 0.6 * u);
         }
       }
       ballPrevV[0] = v[b]; ballPrevV[1] = v[b + 1]; ballPrevV[2] = v[b + 2];
@@ -820,6 +828,9 @@ async function boot({ scene, camera, renderer }) {
     } else {
       ballPrevValid = false;
     }
+    // Haptic channel scheduler: keeps the roller bed alive between pulses
+    // and cuts the motors when it falls silent. 50 Hz, like everything here.
+    haptics.tick();
   }
 
   async function controlStep() {
@@ -842,6 +853,7 @@ async function boot({ scene, camera, renderer }) {
 
     const death = poseIsDead();
     if (death === "exploded") {
+      haptics.pulse("explode");
       resetSim();
     } else if (recovery) {
       // Recovery state machine owns the duck: settle -> stand policy ->
@@ -859,6 +871,7 @@ async function boot({ scene, camera, renderer }) {
           recovery = null;
           mode = "walk";
           lastAction.fill(0);
+          haptics.pulse("recover"); // back on its feet: light double tap
           syncButtons();
         } else if (recovery.steps >= RECOVER_GIVEUP_STEPS) {
           resetSim();
@@ -873,12 +886,18 @@ async function boot({ scene, camera, renderer }) {
           fallDebounce = 0;
           exitHeadMode();
           recovery = { state: "fallen", steps: 0 };
+          // Haptic thud on the confirmed fall (one-shot: this transition
+          // fires once per fall, the recovery machine owns the duck after).
+          haptics.pulse("fall");
           syncButtons();
         }
       } else {
         fallDebounce = 0;
         const now = performance.now();
         const graceMs = mode === "roll" ? 5000 : 1000;
+        // First frame of a non-recoverable fall (rollers, sit, one-shots):
+        // same haptic thud, once - fallenSince latches until reset/upright.
+        if (fallenSince == null) haptics.pulse("fall");
         fallenSince ??= now;
         if (now - fallenSince > graceMs) resetSim();
       }
@@ -949,6 +968,7 @@ async function boot({ scene, camera, renderer }) {
         // Timed out mid-roll: don't hand a tipped duck to the walking
         // policy (it has no get-up skill).
         if (!upright) resetSim();
+        else haptics.pulse("land"); // rolled through and stuck the landing
         syncButtons();
       }
     }
@@ -1063,6 +1083,27 @@ async function boot({ scene, camera, renderer }) {
       };
     })();
     return rollersLoading;
+  }
+
+  // Ghost-only roller rig: kinematics + THREE meshes, no physics model and
+  // no ONNX sessions - just enough to render roller-mode PEERS correctly
+  // for a visitor who never leaves legs mode (ensureRollers' full stack
+  // stays lazy). Kept resident once built; if the player later switches
+  // for real, getRigFor prefers the live locos.rollers rig and this one
+  // quietly remains as a clone source.
+  let ghostRollerRig = null;
+  let ghostRollerRigLoading = null;
+  function ensureGhostRollerRig() {
+    if (locos.rollers || ghostRollerRig || rollersLoading) return;
+    ghostRollerRigLoading ??= (async () => {
+      const rk = await loadKinematics(`${MODEL_DIR}/kinematics_rollers.json`);
+      ghostRollerRig = await buildRig(rk, {
+        materialForMesh: materialHookFor(VARIANTS[currentVariant]),
+      });
+    })().catch((e) => {
+      ghostRollerRigLoading = null; // next roller peer retries the load
+      console.warn("[ghosts] roller ghost rig load failed", e);
+    });
   }
 
   function activateLoco(name) {
@@ -1878,6 +1919,7 @@ async function boot({ scene, camera, renderer }) {
     mode = foot === "left" ? "kickL" : "kickR";
     sitFlag = 0;
     kickRun = { steps: 0 };
+    haptics.pulse("kick"); // swing launch; ball contact adds ballHit
     syncButtons();
     stickers?.pop("kick");
     return true;
@@ -1999,10 +2041,14 @@ async function boot({ scene, camera, renderer }) {
       // default instead of letting applyVariant throw on a bad key.
       variantNames: Object.keys(VARIANTS),
       defaultVariant: DEFAULT_VARIANT,
-      // Ghost rig per locomotion flag: peers in roller mode clone the
-      // roller rig once this tab has built it, and fall back to the leg
-      // rig until then. Known v1 limitation, documented in the README.
-      getRigFor: (l) => (l && locos.rollers ? locos.rollers.rig : locos.legs.rig),
+      // Ghost rig per locomotion flag: roller peers clone the live roller
+      // rig when this tab has it, else the lightweight ghost-only roller
+      // rig. hasRigFor/prepareRigFor let ghosts.js render legs as a
+      // stopgap while lazily loading the real thing, then rebuild.
+      getRigFor: (l) =>
+        (l ? (locos.rollers?.rig ?? ghostRollerRig ?? locos.legs.rig) : locos.legs.rig),
+      hasRigFor: (l) => !l || !!(locos.rollers || ghostRollerRig),
+      prepareRigFor: (l) => { if (l) ensureGhostRollerRig(); },
       getLocalState: () => {
         const qpos = data.qpos;
         const j = new Array(NUM_JOINTS);

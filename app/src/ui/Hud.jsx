@@ -403,9 +403,7 @@ function Quickbar() {
           })}
         </Box>
       </HudPlate>
-      {/* Sound is fully disabled for now (SOUND_DISABLED in audio.js);
-          re-enable this toggle together with that flag. */}
-      {/* <SoundToggle /> */}
+      <SoundToggle />
     </Box>
   );
 }

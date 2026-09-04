@@ -103,9 +103,15 @@ export async function initGhosts(env) {
   const knownVariants = env.variantNames ? new Set(env.variantNames) : null;
   const defaultVariant = env.defaultVariant ?? env.variantNames?.[0];
   // Locomotion-variant rig source: state.l 1 = rollers, 0/absent = legs
-  // (old clients never send it). Falls back to the leg rig when the local
-  // tab hasn't built the roller rig yet - known v1 limitation.
+  // (old clients never send it). The host may not have the wanted rig yet
+  // (the roller stack is lazy): servedLoco says which flavor a ghost
+  // actually gets right now, and prepareRigFor warms the missing one in
+  // the background so a later packet can rebuild onto the real thing.
   const rigFor = (l) => (env.getRigFor ? env.getRigFor(l ?? 0) : env.rig);
+  const servedLoco = (l) => {
+    const want = l ?? 0;
+    return env.hasRigFor && !env.hasRigFor(want) ? 0 : want;
+  };
   // trystero 0.25 (backed by @trystero-p2p): makeAction returns
   // { send, onMessage, onReceiveProgress } where onMessage is a SETTER -
   // the receive handler is registered by assignment, not by calling it.
@@ -189,7 +195,12 @@ export async function initGhosts(env) {
     at: Math.max(performance.now(), prevAt + RESPACE_MIN_MS),
   });
   const makeGhost = (state) => {
-    const rig = cloneRig(rigFor(state.l));
+    // g.loco records the rig the ghost actually GOT (the served flavor),
+    // not the peer's flag: while the roller rig is still loading the ghost
+    // walks on legs, and the mismatch on later packets drives the rebuild.
+    const served = servedLoco(state.l);
+    if (served !== (state.l ?? 0)) env.prepareRigFor?.(state.l);
+    const rig = cloneRig(rigFor(served));
     applyVariant(rig, state.v);
     ghostify(rig);
     scene.add(rig.placer);
@@ -199,7 +210,7 @@ export async function initGhosts(env) {
     trunk.quaternion.set(state.p[4], state.p[5], state.p[6], state.p[3]);
     return {
       rig, trunk, buf: [snapOf(state)],
-      variant: state.v, loco: state.l ?? 0,
+      variant: state.v, loco: served,
       gapAvg: 1000 / SEND_HZ, // measured arrival cadence, ms
       delay: INTERP_DELAY_MS, // current playback delay, ms
     };
@@ -278,17 +289,23 @@ export async function initGhosts(env) {
       g.revealed = true; // latched for the rest of this peer session
       g.rig.placer.visible = true;
     }
-    // Peer switched legs <-> rollers: rebuild its ghost on the other rig
-    // (cheap - cloneRig shares geometry). The snapshot buffer carries over
-    // so the interpolated motion stays continuous across the swap.
+    // Peer switched legs <-> rollers, or the rig its mode needs just
+    // finished lazy-loading: rebuild the ghost on the right rig (cheap -
+    // cloneRig shares geometry). The snapshot buffer carries over so the
+    // interpolated motion stays continuous across the swap. While the
+    // wanted rig is still loading, keep warming it and stay on legs.
     if (state.l !== g.loco) {
-      const { lastSeen, spawn, revealed, buf, gapAvg, delay } = g;
-      removeGhost(peerId);
-      g = makeGhost(state);
-      Object.assign(g, { lastSeen, spawn, revealed, buf, gapAvg, delay });
-      g.rig.placer.visible = revealed;
-      ghosts.set(peerId, g);
-      return;
+      if (servedLoco(state.l) !== state.l) {
+        env.prepareRigFor?.(state.l);
+      } else {
+        const { lastSeen, spawn, revealed, buf, gapAvg, delay } = g;
+        removeGhost(peerId);
+        g = makeGhost(state);
+        Object.assign(g, { lastSeen, spawn, revealed, buf, gapAvg, delay });
+        g.rig.placer.visible = revealed;
+        ghosts.set(peerId, g);
+        return;
+      }
     }
     if (state.v !== g.variant) {
       g.variant = state.v;
@@ -392,7 +409,7 @@ export async function initGhosts(env) {
         meshes++; if (o.visible) visible++; op ??= o.material.opacity;
       });
       const w = g.trunk.getWorldPosition(g.trunk.position.clone());
-      return { p: g.trunk.position.toArray(), world: w.toArray(), inScene: !!g.rig.placer.parent, revealed: g.revealed, meshes, visible, twins, op, v: g.variant, gapAvg: g.gapAvg, delay: g.delay, bufLen: g.buf.length };
+      return { p: g.trunk.position.toArray(), world: w.toArray(), inScene: !!g.rig.placer.parent, revealed: g.revealed, meshes, visible, twins, op, v: g.variant, l: g.loco, gapAvg: g.gapAvg, delay: g.delay, bufLen: g.buf.length };
     }),
     update() {
       const now = performance.now();

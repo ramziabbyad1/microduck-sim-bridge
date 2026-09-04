@@ -21,7 +21,7 @@ import { signed } from "./signed.js";
 // point early-returns, master gain pinned to 0, context never resumed).
 // Node-returning helpers (busNode, createEmitter) keep building their
 // graph either way so callers stay untouched.
-const SOUND_DISABLED = true;
+const SOUND_DISABLED = false;
 
 // ── Context, master, buses ────────────────────────────────────────────
 const MASTER_LEVEL = 0.9;

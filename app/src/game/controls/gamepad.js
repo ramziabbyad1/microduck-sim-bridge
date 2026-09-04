@@ -46,6 +46,15 @@ const BTN_R3 = 11, BTN_DPAD_UP = 12, BTN_DPAD_DOWN = 13;
 
 const DPAD_UP_HOLD_MS = 1000; // hold-to-switch-loco duration
 
+// The one pad-picking rule, shared by poll() and the haptics engine
+// (haptics.js): prefer a standard-mapping pad - the button indices above
+// are only guaranteed by the "standard" layout - and fall back to
+// whatever is connected.
+export function pickPad() {
+  const pads = [...(navigator.getGamepads?.() ?? [])].filter((p) => p && p.connected);
+  return pads.find((p) => p.mapping === "standard") ?? pads[0];
+}
+
 export class GamepadSource {
   id = "gamepad";
   connected = false;
@@ -82,12 +91,10 @@ export class GamepadSource {
 
   poll() {
     const prev = this.pressed;
-    // Prefer a standard-mapping pad: the button indices above are only
-    // guaranteed by the "standard" layout. A non-standard pad (mapping "")
-    // is a last-resort fallback - its indices are firmware-defined and
-    // some mirror one combined trigger channel onto both trigger slots.
-    const pads = [...(navigator.getGamepads?.() ?? [])].filter((p) => p && p.connected);
-    const gp = pads.find((p) => p.mapping === "standard") ?? pads[0];
+    // A non-standard pad (mapping "") is a last-resort fallback in
+    // pickPad - its indices are firmware-defined and some mirror one
+    // combined trigger channel onto both trigger slots.
+    const gp = pickPad();
     this.connected = !!gp;
     if (!gp) {
       if (this.#active) {
