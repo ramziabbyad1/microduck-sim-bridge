@@ -36,10 +36,12 @@ and [pollen-robotics/microduck_rl](https://github.com/pollen-robotics/microduck_
 
 ## Controls
 
-- Arrows or WASD (ZQSD): forward / back + turn
+- Arrows or WASD / ZQSD: forward / back + turn
 - M: switch legs <-> rollers
 - Q / E (A / E on AZERTY): kick left / right (legs only)
-- R: roll (legs) / crouch-glide (rollers)
+- F: alternate left / right kicks (legs only)
+- R: sit / stand (legs) / crouch-glide (rollers)
+- G: ground pick (legs only)
 - C: toggle the chase camera (on by default; dragging detaches it)
 - Space: reset
 - Drag to orbit, scroll to zoom
@@ -67,11 +69,13 @@ Plug in a controller and the same mapping as the real robot runtime applies:
 - Left stick: forward / back + turn
 - Right stick: orbit the camera (detaches the chase cam)
 - R3 (right stick click): toggle the chase cam back on
-- X: roll (legs) / crouch-glide (rollers)
+- X or D-pad down: sit / stand (legs) / crouch-glide (rollers)
+- A: ground pick (legs only)
+- Y: toggle head control
 - RB / LB: right / left kick (legs only)
-- D-pad down: sit / stand toggle (legs only)
 - D-pad up: hold ~1 s to switch legs <-> rollers (the real robot uses a 3 s hold)
 - Right trigger: mouth (analog) + quack
+- Left trigger: hold for wheee
 - A: enter / resume the game while the title or pause overlay is up
 - Menu/Start (or Select): exit back to the title overlay while in-game
 
