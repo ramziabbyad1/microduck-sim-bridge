@@ -144,10 +144,11 @@ npm run build   # production bundle in app/dist/
 
 ## Experimental JSON-RPC adapter
 
-This fork is adding an API-compatible simulator boundary so the same client
-can eventually target either `robotd` or MuJoCo. The current vertical slice
+This fork adds an API-compatible simulator boundary so the same client can
+eventually target either `robotd` or MuJoCo. The current vertical slice
 supports the physical robot's `robot.move`, `robot.stop`, and `robot.do` calls
-in the browser. It intentionally uses the robot's 500 ms movement dead-man. See
+in the browser, plus a read-only `robot.get_state` simulator extension. It
+intentionally uses the robot's 500 ms movement dead-man. See
 [`docs/adapter-architecture.md`](docs/adapter-architecture.md) for the design
 and extension points.
 
@@ -191,13 +192,23 @@ same-origin WebSocket automatically and exposes two client endpoints:
 The gateway binds HTTP to localhost by default. Keep it local while the
 adapter has no authentication.
 
-With that browser tab open, demonstrate an API-only kick through the Unix
-socket (not a keyboard event):
+After entering the simulator and letting its entrance finish, inspect state,
+stream movement, or run the complete walk-turn-kick demonstration through the
+Unix socket:
 
 ```bash
 cd app
+npm run robot:state
+npm run robot:move -- forward --seconds 2
+npm run robot:move -- left --seconds 1
 npm run robot:do -- kick_left
+npm run robot:demo
 ```
+
+`left` and `right` are aliases for turning, not strafing. Movement is refreshed
+at 20 Hz and explicitly stopped at the end, including on Ctrl-C. The demo waits
+for a stable standing pose before kicking, so it also serves as a repeatable
+adapter smoke test rather than a synthetic keyboard test.
 
 The Space builds with the included `Dockerfile` (Vite build, served by
 nginx-unprivileged on port 8080). Static assets (meshes, policies, audio,

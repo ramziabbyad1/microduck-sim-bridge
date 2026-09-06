@@ -10,6 +10,8 @@ import { WebSocket } from "ws";
 import { createBridge } from "../bridge/server.js";
 import { ApiSource, MicroduckRpc } from "../src/game/controls/api.js";
 import { callRobotDo } from "../tools/robot-do.js";
+import { driveRobot } from "../tools/robot-move.js";
+import { callRobotState } from "../tools/robot-state.js";
 
 const openWebSocket = (url) => new Promise((resolve, reject) => {
   const socket = new WebSocket(url);
@@ -56,7 +58,16 @@ test("real NDJSON and WebSocket clients reach the simulated API", { timeout: 5_0
   });
 
   const source = new ApiSource();
-  const rpc = new MicroduckRpc({ source });
+  const rpc = new MicroduckRpc({
+    source,
+    getState: () => ({
+      ready: true,
+      inputLocked: false,
+      locomotion: "legs",
+      mode: "walk",
+      moving: source.isActive(),
+    }),
+  });
   let apiAction = null;
   source.onAction = (action, meta) => {
     apiAction = { action, skill: meta.skill };
@@ -88,6 +99,28 @@ test("real NDJSON and WebSocket clients reach the simulated API", { timeout: 5_0
     result: { accepted: true },
   });
   assert.deepEqual(apiAction, { action: "kickL", skill: "kick_left" });
+
+  assert.deepEqual(await callRobotState({ socketPath }), {
+    jsonrpc: "2.0",
+    id: 1,
+    result: {
+      ready: true,
+      inputLocked: false,
+      locomotion: "legs",
+      mode: "walk",
+      moving: false,
+    },
+  });
+
+  const movement = await driveRobot({
+    direction: "right",
+    seconds: 0.05,
+    rate: 50,
+    socketPath,
+  });
+  assert.equal(movement.direction, "turn-right");
+  assert.equal(source.isActive(), false);
+  assert.deepEqual(Array.from(source.command), [0, 0, 0]);
 
   const webSocketClient = await openWebSocket(`ws://127.0.0.1:${address.port}/rpc`);
   t.after(() => webSocketClient.close());

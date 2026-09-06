@@ -66,6 +66,51 @@ test("robot.stop immediately zeroes movement", () => {
     result: { accepted: true },
   });
   assert.deepEqual(Array.from(source.command), [0, 0, 0]);
+  assert.equal(source.isActive(), false);
+});
+
+test("robot.get_state returns the simulator's read-only state snapshot", () => {
+  const source = new ApiSource();
+  const state = {
+    ready: true,
+    inputLocked: false,
+    locomotion: "legs",
+    mode: "walk",
+    moving: false,
+  };
+  const rpc = new MicroduckRpc({ source, getState: () => state });
+
+  assert.deepEqual(rpc.receive({
+    jsonrpc: "2.0",
+    id: "state-1",
+    method: "robot.get_state",
+  }), {
+    jsonrpc: "2.0",
+    id: "state-1",
+    result: state,
+  });
+});
+
+test("robot.get_state accepts only omitted or empty params", () => {
+  const source = new ApiSource();
+  const rpc = new MicroduckRpc({ source });
+
+  assert.deepEqual(rpc.receive({
+    jsonrpc: "2.0",
+    id: "state-empty",
+    method: "robot.get_state",
+    params: {},
+  }), {
+    jsonrpc: "2.0",
+    id: "state-empty",
+    result: { ready: false },
+  });
+  assert.equal(rpc.receive({
+    jsonrpc: "2.0",
+    id: "state-bad",
+    method: "robot.get_state",
+    params: { verbose: true },
+  }).error.code, -32602);
 });
 
 test("robot.do translates every physical skill through the Controller", () => {

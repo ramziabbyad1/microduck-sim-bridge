@@ -9,7 +9,10 @@
     "build": "vite build",
     "preview": "vite preview",
     "bridge": "node bridge/server.js",
-    "robot:do": "node tools/robot-do.js"
+    "robot:do": "node tools/robot-do.js",
+    "robot:move": "node tools/robot-move.js",
+    "robot:state": "node tools/robot-state.js",
+    "robot:demo": "node tools/robot-demo.js"
   },
   "dependencies": {
     "@emotion/react": "^11.14.0",

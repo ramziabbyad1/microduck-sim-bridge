@@ -1828,6 +1828,23 @@ async function boot({ scene, camera, renderer }) {
     : mode === "roll" ? "roulade"
     : mode === "sitstand" ? "sit_toggle"
     : null;
+  microduckRpc.setStateProvider(() => {
+    const command = effectiveCmd();
+    const vx = command[0];
+    const vy = command[1];
+    const vyaw = command[2];
+    return {
+      ready: store().bootDone === true,
+      inputLocked,
+      locomotion: loco,
+      locomotionSwitching: locoSwitching,
+      mode,
+      activeSkill: activeSkill(),
+      moving: Math.abs(vx) + Math.abs(vy) + Math.abs(vyaw) > 1e-4,
+      command: { vx, vy, vyaw },
+      recovery: recovery?.state ?? null,
+    };
+  });
   const refusedSkillReason = (skill) => {
     if (loco !== "legs") return `${skill} is unavailable in roller mode`;
     if (inputLocked) return "simulator input is locked";

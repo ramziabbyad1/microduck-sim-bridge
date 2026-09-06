@@ -1,8 +1,8 @@
-import net from "node:net";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
 
-const DEFAULT_SOCKET = "/tmp/microduck-sim/robotd.sock";
+import { callRobot, DEFAULT_SOCKET } from "./robot-client.js";
+
 const SKILLS = new Set([
   "ground_pick",
   "kick_left",
@@ -16,41 +16,7 @@ export function callRobotDo({ skill, socketPath = DEFAULT_SOCKET }) {
     throw new TypeError(`skill must be one of: ${[...SKILLS].join(", ")}`);
   }
 
-  return new Promise((resolve, reject) => {
-    const socket = net.createConnection(socketPath);
-    let buffered = "";
-    const timeout = setTimeout(() => {
-      socket.destroy();
-      reject(new Error("timed out waiting for robot.do response"));
-    }, 5_000);
-
-    const cleanup = () => clearTimeout(timeout);
-    socket.setEncoding("utf8");
-    socket.once("connect", () => {
-      socket.write(`${JSON.stringify({
-        jsonrpc: "2.0",
-        id: 1,
-        method: "robot.do",
-        params: { skill },
-      })}\n`);
-    });
-    socket.on("data", (chunk) => {
-      buffered += chunk;
-      const newline = buffered.indexOf("\n");
-      if (newline === -1) return;
-      cleanup();
-      socket.end();
-      try {
-        resolve(JSON.parse(buffered.slice(0, newline)));
-      } catch (error) {
-        reject(new Error(`invalid JSON response: ${error.message}`));
-      }
-    });
-    socket.once("error", (error) => {
-      cleanup();
-      reject(error);
-    });
-  });
+  return callRobot({ method: "robot.do", params: { skill }, socketPath });
 }
 
 async function main() {

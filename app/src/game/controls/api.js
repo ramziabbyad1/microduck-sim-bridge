@@ -63,6 +63,13 @@ function decodeDoParams(params) {
   return params.skill;
 }
 
+function decodeEmptyParams(params) {
+  if (params === undefined) return;
+  if (!isObject(params) || Object.keys(params).length !== 0) {
+    throw new TypeError("params must be omitted or an empty object");
+  }
+}
+
 export class ApiSource {
   id = "api";
   connected = true;
@@ -110,7 +117,10 @@ export class ApiSource {
   }
 
   stop() {
-    this.move(ZERO_PARAMS);
+    // An explicit stop differs from an all-zero move: it releases API
+    // authority immediately so local controls can take over without waiting
+    // for the 500 ms dead-man.
+    this.#release();
   }
 
   // Discrete skills use the same Controller action path as keyboard and
@@ -139,9 +149,19 @@ export class ApiSource {
 
 export class MicroduckRpc {
   #source;
+  #getState = () => ({ ready: false });
 
-  constructor({ source }) {
+  constructor({ source, getState } = {}) {
+    if (!source) throw new TypeError("source is required");
     this.#source = source;
+    if (getState !== undefined) this.setStateProvider(getState);
+  }
+
+  setStateProvider(getState) {
+    if (typeof getState !== "function") {
+      throw new TypeError("state provider must be a function");
+    }
+    this.#getState = getState;
   }
 
   // Accept either decoded JSON or a wire-format string. Returning null means
@@ -179,6 +199,11 @@ export class MicroduckRpc {
           break;
         case "robot.do":
           result = this.#source.doSkill(decodeDoParams(request.params));
+          break;
+        case "robot.get_state":
+          decodeEmptyParams(request.params);
+          result = this.#getState();
+          if (!isObject(result)) throw new TypeError("state provider must return an object");
           break;
         default:
           if (notification) return null;

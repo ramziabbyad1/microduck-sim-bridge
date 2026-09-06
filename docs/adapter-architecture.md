@@ -67,10 +67,11 @@ must not be exposed to an untrusted network.
 | --- | --- | --- |
 | `robot.move` | continuous notification | implemented |
 | `robot.stop` | answered request | implemented |
+| `robot.get_state` | answered simulator state request | implemented extension |
 | `robot.head` | continuous notification | next |
 | `robot.do` | answered skill request | implemented |
 | `robot.setMode` | answered request | next |
-| `robot.subscribe` / `robot.state` | stream | planned |
+| `robot.subscribe` / `robot.state` | state stream | planned |
 
 Continuous movement deliberately supports answered requests too, because the
 physical `robotd` accepts both JSON-RPC forms even though clients normally use
@@ -82,15 +83,61 @@ Compatibility belongs at the boundary. Physics behavior stays in the existing
 simulator, protocol behavior stays in the RPC layer, and byte transport stays
 in the gateway. A change in one should not require edits in the other two.
 
-## Discrete skill demonstration
+`robot.get_state` is currently a simulator extension rather than a claim of
+physical `robotd` compatibility. It reports boot/input readiness, locomotion
+variant, policy mode, active skill, effective command, movement, and recovery
+state. That lets demonstrations fail with a useful precondition instead of
+silently sending a kick while the entrance still owns the robot.
 
-With the bridge running and its simulator tab open, invoke a skill through the
-same NDJSON Unix-socket boundary as `robotd`:
+## Command-line demonstrations
+
+Build and start the bridge, open its URL, then enter the simulator and let the
+entrance finish:
 
 ```bash
 cd app
+npm run build
+npm run bridge
+```
+
+In a second terminal, inspect the simulator state:
+
+```bash
+cd app
+npm run robot:state
+```
+
+Stream a movement intent at 20 Hz and stop automatically after two seconds:
+
+```bash
+npm run robot:move -- forward --seconds 2
+npm run robot:move -- turn-left --seconds 1
+```
+
+Directions are `forward`, `backward`, `turn-left`, and `turn-right`. The
+short aliases `up`, `down`, `left`, and `right` are also accepted; left/right
+turn the duck because the current locomotion policy does not expose lateral
+keyboard movement. `--speed`, `--rate`, and `--socket` override their safe
+defaults. The tool always requests `robot.stop` after its stream, including
+when interrupted with Ctrl-C.
+
+Invoke a discrete skill through the same NDJSON Unix-socket boundary as
+`robotd`:
+
+```bash
 npm run robot:do -- kick_left
 ```
+
+Or run the repeatable end-to-end demonstration:
+
+```bash
+npm run robot:demo
+```
+
+The demo checks `robot.get_state`, walks forward, turns left, explicitly
+stops, waits 750 ms for a stable stance, and kicks. It refuses to start while
+the simulator is booting/locked, another skill is active, or rollers are
+selected.
 
 Refresh an already-open simulator tab after rebuilding so it loads the new
 adapter bundle.
