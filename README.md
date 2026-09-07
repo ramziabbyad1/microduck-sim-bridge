@@ -159,7 +159,7 @@ After entering the simulator, this browser-console example drives forward at
 window.demoDrive = setInterval(() => window.microduckRpc.receive({
   jsonrpc: "2.0",
   method: "robot.move",
-  params: { vx: 0.2, vy: 0, vyaw: 0 },
+  params: { vx: 0.25, vy: 0, vyaw: 0 },
 }), 50);
 ```
 
@@ -209,6 +209,12 @@ npm run robot:demo
 at 20 Hz and explicitly stopped at the end, including on Ctrl-C. The demo waits
 for a stable standing pose before kicking, so it also serves as a repeatable
 adapter smoke test rather than a synthetic keyboard test.
+
+Forward movement defaults to a 0.25 m/s target, matching W / Up in legs mode.
+The bundled walking policy can sway almost in place at lower targets such as
+0.2 m/s when starting from rest. `--speed` still sends the requested value
+unchanged. Command acceptance and the `moving` flag in `robot.get_state` describe
+movement intent, not measured displacement.
 
 The Space builds with the included `Dockerfile` (Vite build, served by
 nginx-unprivileged on port 8080). Static assets (meshes, policies, audio,

@@ -1,6 +1,7 @@
 import process from "node:process";
 import { pathToFileURL } from "node:url";
 
+import { VEL_FWD } from "../src/game/constants.js";
 import { DEFAULT_SOCKET, RobotClient, rpcResult } from "./robot-client.js";
 
 const ALIASES = new Map([
@@ -15,7 +16,9 @@ const ALIASES = new Map([
   ["right", "turn-right"],
 ]);
 const DEFAULT_SPEED = Object.freeze({
-  forward: 0.2,
+  // Match the keyboard: the bundled walking policy can sway almost in
+  // place at 0.2 m/s when starting from rest. Explicit speeds pass through.
+  forward: VEL_FWD,
   backward: 0.15,
   "turn-left": 0.6,
   "turn-right": 0.6,

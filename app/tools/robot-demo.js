@@ -57,7 +57,6 @@ export async function runRobotDemo({
       client: robot,
       direction: "forward",
       seconds: forwardSeconds,
-      speed: 0.18,
       signal,
     });
     log("Turning left...");

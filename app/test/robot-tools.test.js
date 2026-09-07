@@ -40,7 +40,8 @@ class FakeRobotClient {
 }
 
 test("movement directions map aliases to conservative twists", () => {
-  assert.deepEqual(moveParams("up"), { vx: 0.2, vy: 0, vyaw: 0 });
+  assert.deepEqual(moveParams("up"), { vx: 0.25, vy: 0, vyaw: 0 });
+  assert.deepEqual(moveParams("forward", 0.2), { vx: 0.2, vy: 0, vyaw: 0 });
   assert.deepEqual(moveParams("down", 0.1), { vx: -0.1, vy: 0, vyaw: 0 });
   assert.deepEqual(moveParams("left"), { vx: 0, vy: 0, vyaw: 0.6 });
   assert.deepEqual(moveParams("right", 0.4), { vx: 0, vy: 0, vyaw: -0.4 });
@@ -113,6 +114,7 @@ test("demo moves, settles, then kicks from an idle legs state", async () => {
     "robot.do",
     "robot.get_state",
   ]);
+  assert.deepEqual(client.requests[1].params, moveParams("forward"));
   assert.deepEqual(client.requests[5].params, { skill: "kick_left" });
   assert.equal(result.final.activeSkill, "kick_left");
   assert.match(lines.at(-1), /Standing still/);
